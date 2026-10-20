@@ -1,0 +1,6 @@
+{
+  "name": "WaveLab 3D",
+  "description": "Interactive 3D wave propagation and obstacle simulation with parametric walls and real-time oscilloscope",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

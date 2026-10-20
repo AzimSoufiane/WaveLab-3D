@@ -2,17 +2,24 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 // @ts-ignore
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { MaterialPreset, WallGeometry, WaveConfig, ProbeData, SimulationState } from '../types';
-import { calculateWaveField } from '../physics/waveEngine';
+import {
+  MaterialPreset,
+  WallGeometry,
+  WaveConfig,
+  DualProbeState,
+  SimulationState,
+  SurfaceTextureProfile,
+} from '../types';
+import { calculateWaveField, getSurfaceTextureDisplacement } from '../physics/waveEngine';
 
 interface ThreeViewportProps {
   wave: WaveConfig;
   wall: WallGeometry;
   material: MaterialPreset;
-  probe: ProbeData;
-  onProbeMove: (x: number, z: number) => void;
+  probe: DualProbeState;
+  onProbeMove: (probeId: 1 | 2, x: number, z: number) => void;
   simulation: SimulationState;
-  onTimeUpdate: (time: number, signalValue: number) => void;
+  onTimeUpdate: (time: number, val1: number, val2: number) => void;
 }
 
 export const ThreeViewport: React.FC<ThreeViewportProps> = ({
@@ -30,16 +37,19 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<any>(null);
   const waveMeshRef = useRef<THREE.Mesh | null>(null);
-  const wallGroupRef = useRef<THREE.Group | null>(null);
+  const wallMeshRef = useRef<THREE.Mesh | null>(null);
   const vectorArrowsRef = useRef<THREE.InstancedMesh | null>(null);
-  const probeMeshRef = useRef<THREE.Group | null>(null);
 
-  const isDraggingProbe = useRef(false);
+  // Sondes 3D
+  const probe1GroupRef = useRef<THREE.Group | null>(null);
+  const probe2GroupRef = useRef<THREE.Group | null>(null);
+
+  const draggingProbeId = useRef<1 | 2 | null>(null);
   const raycaster = useRef(new THREE.Raycaster());
   const mouse = useRef(new THREE.Vector2());
   const groundPlane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
 
-  // Current refs for animation loop
+  // Mutable refs synchronisées pour la boucle d'animation
   const waveRef = useRef(wave);
   waveRef.current = wave;
   const wallRef = useRef(wall);
@@ -48,95 +58,101 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   materialRef.current = material;
   const simRef = useRef(simulation);
   simRef.current = simulation;
-  const probePosRef = useRef({ x: probe.x, z: probe.z });
-  probePosRef.current = { x: probe.x, z: probe.z };
+  const probeStateRef = useRef(probe);
+  probeStateRef.current = probe;
 
   const timeRef = useRef(0);
 
-  // Initialize Three.js Scene
+  // Initialisation de la scène Three.js
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    // Scene
+    // Scène
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x090d16);
-    scene.fog = new THREE.FogExp2(0x090d16, 0.015);
+    scene.fog = new THREE.FogExp2(0x090d16, 0.012);
     sceneRef.current = scene;
 
-    // Camera
+    // Caméra
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-    camera.position.set(0, 22, 28);
+    camera.position.set(0, 24, 30);
     cameraRef.current = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // Moteur de rendu WebGL
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Controls
+    // Contrôles orbitaux
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.maxPolarAngle = Math.PI / 2 - 0.05;
-    controls.minDistance = 8;
-    controls.maxDistance = 70;
+    controls.maxPolarAngle = Math.PI / 2 - 0.04;
+    controls.minDistance = 6;
+    controls.maxDistance = 75;
     controls.target.set(0, 0, 0);
     controlsRef.current = controls;
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    // Éclairage studio 3 points
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-    dirLight.position.set(10, 25, 15);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.3);
+    dirLight.position.set(12, 28, 16);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 1024;
     dirLight.shadow.mapSize.height = 1024;
     scene.add(dirLight);
 
-    const blueLight = new THREE.PointLight(0x00f5d4, 2.0, 40);
-    blueLight.position.set(-14, 5, 0);
-    scene.add(blueLight);
+    const cyanFill = new THREE.PointLight(0x00f5d4, 2.2, 45);
+    cyanFill.position.set(-16, 6, 0);
+    scene.add(cyanFill);
 
-    // Coordinate Grid & Platform
-    const grid = new THREE.GridHelper(36, 36, 0x1f2937, 0x111827);
-    grid.position.y = -0.05;
+    const amberRim = new THREE.PointLight(0xf59e0b, 1.8, 45);
+    amberRim.position.set(16, 6, 0);
+    scene.add(amberRim);
+
+    // Grille de coordonnées cartésiennes de laboratoire
+    const grid = new THREE.GridHelper(36, 36, 0x1e293b, 0x0f172a);
+    grid.position.y = -0.02;
     scene.add(grid);
 
-    // Dynamic Wave Surface Mesh
-    const planeGeo = new THREE.PlaneGeometry(32, 24, 120, 80);
+    // Nappe 3D de déformation de champ électrique
+    const planeGeo = new THREE.PlaneGeometry(32, 22, 140, 90);
     planeGeo.rotateX(-Math.PI / 2);
-    // Add vertex colors attribute
     const count = planeGeo.attributes.position.count;
     const colors = new Float32Array(count * 3);
     planeGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const waveMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.3,
+      roughness: 0.25,
       metalness: 0.2,
-      wireframe: false,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.9,
     });
     const waveMesh = new THREE.Mesh(planeGeo, waveMat);
     waveMesh.receiveShadow = true;
     scene.add(waveMesh);
     waveMeshRef.current = waveMesh;
 
-    // Instanced Vector Arrows (Local Poynting Flux / Gradient)
+    // Flèches vectorielles de Poynting (InstancedMesh)
     const arrowConeGeo = new THREE.ConeGeometry(0.12, 0.45, 8);
-    arrowConeGeo.rotateX(Math.PI / 2); // point along +Z
-    const arrowMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
-    const arrowRows = 16;
+    arrowConeGeo.rotateX(Math.PI / 2);
+    const arrowMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const arrowRows = 14;
     const arrowCols = 20;
     const totalArrows = arrowRows * arrowCols;
     const arrowMesh = new THREE.InstancedMesh(arrowConeGeo, arrowMat, totalArrows);
@@ -144,46 +160,60 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     scene.add(arrowMesh);
     vectorArrowsRef.current = arrowMesh;
 
-    // Parametric Wall Group
-    const wallGroup = new THREE.Group();
-    scene.add(wallGroup);
-    wallGroupRef.current = wallGroup;
+    // Création des deux sondes virtuelles (Sonde 1 en Cyan, Sonde 2 en Ambre)
+    const buildProbeGroup = (colorHex: number, labelText: string) => {
+      const group = new THREE.Group();
 
-    // Draggable Probe Marker
-    const probeGroup = new THREE.Group();
-    // Sphere
-    const probeSphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.35, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xff5722, emissive: 0xff5722, emissiveIntensity: 0.8 })
-    );
-    probeSphere.position.y = 1.0;
-    probeGroup.add(probeSphere);
-    // Vertical stem
-    const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8);
-    const stem = new THREE.Mesh(stemGeo, new THREE.MeshBasicMaterial({ color: 0xff7043 }));
-    stem.position.y = 0.5;
-    probeGroup.add(stem);
-    // Ground target ring
-    const ringGeo = new THREE.RingGeometry(0.4, 0.55, 24);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xff5722, side: THREE.DoubleSide }));
-    ring.position.y = 0.02;
-    probeGroup.add(ring);
-    scene.add(probeGroup);
-    probeMeshRef.current = probeGroup;
+      // Sphère active
+      const sphereGeo = new THREE.SphereGeometry(0.32, 20, 20);
+      const sphereMat = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        emissive: colorHex,
+        emissiveIntensity: 0.9,
+        roughness: 0.2,
+      });
+      const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+      sphere.position.y = 1.0;
+      group.add(sphere);
 
-    // Handle Window Resize
+      // Tige graduée
+      const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8);
+      const stemMat = new THREE.MeshBasicMaterial({ color: colorHex });
+      const stem = new THREE.Mesh(stemGeo, stemMat);
+      stem.position.y = 0.5;
+      group.add(stem);
+
+      // Anneau de positionnement au sol
+      const ringGeo = new THREE.RingGeometry(0.35, 0.55, 24);
+      ringGeo.rotateX(-Math.PI / 2);
+      const ringMat = new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.y = 0.02;
+      group.add(ring);
+
+      return group;
+    };
+
+    const probe1 = buildProbeGroup(0x00f5d4, 'Sonde 1');
+    scene.add(probe1);
+    probe1GroupRef.current = probe1;
+
+    const probe2 = buildProbeGroup(0xf59e0b, 'Sonde 2');
+    scene.add(probe2);
+    probe2GroupRef.current = probe2;
+
+    // Redimensionnement de la fenêtre
     const handleResize = () => {
-      if (!containerRef.current || !renderer || !camera) return;
+      if (!containerRef.current || !rendererRef.current || !cameraRef.current) return;
       const w = containerRef.current.clientWidth;
       const h = containerRef.current.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      cameraRef.current.aspect = w / h;
+      cameraRef.current.updateProjectionMatrix();
+      rendererRef.current.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
 
-    // Pointer Events for Draggable Probe
+    // Gestion du glisser-déposer des sondes via Raycasting
     const getIntersectionPoint = (e: MouseEvent | Touch): THREE.Vector3 | null => {
       if (!containerRef.current || !cameraRef.current) return null;
       const rect = containerRef.current.getBoundingClientRect();
@@ -198,29 +228,35 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     };
 
     const handlePointerDown = (e: MouseEvent) => {
-      if (e.button !== 0) return; // Left click only
+      if (e.button !== 0) return;
       const pt = getIntersectionPoint(e);
-      if (pt) {
-        const dist = Math.hypot(pt.x - probePosRef.current.x, pt.z - probePosRef.current.z);
-        if (dist < 1.6) {
-          isDraggingProbe.current = true;
-          controls.enabled = false;
-        }
+      if (!pt) return;
+
+      const p1 = probeStateRef.current;
+      const dist1 = Math.hypot(pt.x - p1.x1, pt.z - p1.z1);
+      const dist2 = Math.hypot(pt.x - p1.x2, pt.z - p1.z2);
+
+      if (dist1 < 1.6 && dist1 <= dist2) {
+        draggingProbeId.current = 1;
+        controls.enabled = false;
+      } else if (dist2 < 1.6) {
+        draggingProbeId.current = 2;
+        controls.enabled = false;
       }
     };
 
     const handlePointerMove = (e: MouseEvent) => {
-      if (!isDraggingProbe.current) return;
+      if (!draggingProbeId.current) return;
       const pt = getIntersectionPoint(e);
       if (pt) {
-        const clampedX = Math.max(-14, Math.min(14, pt.x));
-        const clampedZ = Math.max(-10, Math.min(10, pt.z));
-        onProbeMove(clampedX, clampedZ);
+        const clampedX = Math.max(-14.5, Math.min(14.5, pt.x));
+        const clampedZ = Math.max(-9.5, Math.min(9.5, pt.z));
+        onProbeMove(draggingProbeId.current, clampedX, clampedZ);
       }
     };
 
     const handlePointerUp = () => {
-      isDraggingProbe.current = false;
+      draggingProbeId.current = null;
       controls.enabled = true;
     };
 
@@ -229,33 +265,37 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
 
-    // Touch events for mobile
+    // Support tactile pour écrans mobiles/tablettes
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 1) {
         const pt = getIntersectionPoint(e.touches[0]);
-        if (pt) {
-          const dist = Math.hypot(pt.x - probePosRef.current.x, pt.z - probePosRef.current.z);
-          if (dist < 2.0) {
-            isDraggingProbe.current = true;
-            controls.enabled = false;
-          }
+        if (!pt) return;
+        const p1 = probeStateRef.current;
+        const dist1 = Math.hypot(pt.x - p1.x1, pt.z - p1.z1);
+        const dist2 = Math.hypot(pt.x - p1.x2, pt.z - p1.z2);
+        if (dist1 < 2.0 && dist1 <= dist2) {
+          draggingProbeId.current = 1;
+          controls.enabled = false;
+        } else if (dist2 < 2.0) {
+          draggingProbeId.current = 2;
+          controls.enabled = false;
         }
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (isDraggingProbe.current && e.touches.length === 1) {
+      if (draggingProbeId.current && e.touches.length === 1) {
         const pt = getIntersectionPoint(e.touches[0]);
         if (pt) {
-          const clampedX = Math.max(-14, Math.min(14, pt.x));
-          const clampedZ = Math.max(-10, Math.min(10, pt.z));
-          onProbeMove(clampedX, clampedZ);
+          const clampedX = Math.max(-14.5, Math.min(14.5, pt.x));
+          const clampedZ = Math.max(-9.5, Math.min(9.5, pt.z));
+          onProbeMove(draggingProbeId.current, clampedX, clampedZ);
         }
       }
     };
 
     const handleTouchEnd = () => {
-      isDraggingProbe.current = false;
+      draggingProbeId.current = null;
       controls.enabled = true;
     };
 
@@ -263,7 +303,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     window.addEventListener('touchmove', handleTouchMove, { passive: true });
     window.addEventListener('touchend', handleTouchEnd);
 
-    // Animation Render Loop
+    // Boucle d'animation WebGL
     let animId: number;
     let lastTime = performance.now();
 
@@ -278,7 +318,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
       controls.update();
 
-      // Update Wave Surface Mesh Vertices
+      // Mise à jour de la déformation de surface 3D
       if (waveMeshRef.current) {
         const geo = waveMeshRef.current.geometry;
         const pos = geo.attributes.position;
@@ -289,9 +329,10 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         const curWall = wallRef.current;
         const curMat = materialRef.current;
 
-        const crestColor = new THREE.Color(0x00f5d4); // cyan
-        const troughColor = new THREE.Color(0x7928ca); // purple
-        const zeroColor = new THREE.Color(0x091426); // dark navy
+        const crestColor = new THREE.Color(0x00f5d4); // Cyan
+        const troughColor = new THREE.Color(0x6366f1); // Indigo
+        const zeroColor = new THREE.Color(0x091124); // Bleu nuit sombre
+        const evanescentColor = new THREE.Color(0xf43f5e); // Rose pour coupure
 
         for (let i = 0; i < count; i++) {
           const x = pos.getX(i);
@@ -301,17 +342,22 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
           const elev = simRef.current.showSurface ? field.amplitude * 1.3 : 0;
           pos.setY(i, elev);
 
-          // Color calculation
-          const normVal = Math.max(-1, Math.min(1, field.amplitude / Math.max(0.1, curWave.amplitude)));
+          const normVal = Math.max(
+            -1,
+            Math.min(1, field.amplitude / Math.max(0.1, curWave.amplitude))
+          );
           const vertexColor = new THREE.Color();
-          if (normVal > 0) {
+
+          if (field.isEvanescent) {
+            vertexColor.lerpColors(zeroColor, evanescentColor, Math.abs(normVal));
+          } else if (normVal > 0) {
             vertexColor.lerpColors(zeroColor, crestColor, normVal);
           } else {
             vertexColor.lerpColors(zeroColor, troughColor, -normVal);
           }
 
-          if (field.inObstacle) {
-            vertexColor.multiplyScalar(0.25);
+          if (field.inObstacle && !field.isEvanescent) {
+            vertexColor.multiplyScalar(0.3);
           }
 
           col.setXYZ(i, vertexColor.r, vertexColor.g, vertexColor.b);
@@ -322,26 +368,33 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         geo.computeVertexNormals();
       }
 
-      // Update Vector Arrows
+      // Mise à jour des flèches vectorielles de flux de Poynting
       if (vectorArrowsRef.current && simRef.current.showVectors) {
         vectorArrowsRef.current.visible = true;
         const dummy = new THREE.Object3D();
         let idx = 0;
         const xStep = 28 / (arrowCols - 1);
-        const zStep = 20 / (arrowRows - 1);
+        const zStep = 18 / (arrowRows - 1);
         const t = timeRef.current;
 
         for (let r = 0; r < arrowRows; r++) {
           for (let c = 0; c < arrowCols; c++) {
             const x = -14 + c * xStep;
-            const z = -10 + r * zStep;
-            const field = calculateWaveField(x, z, t, waveRef.current, wallRef.current, materialRef.current);
+            const z = -9 + r * zStep;
+            const field = calculateWaveField(
+              x,
+              z,
+              t,
+              waveRef.current,
+              wallRef.current,
+              materialRef.current
+            );
 
-            dummy.position.set(x, Math.max(0.2, field.amplitude * 1.3 + 0.3), z);
+            dummy.position.set(x, Math.max(0.15, field.amplitude * 1.3 + 0.35), z);
             const angle = Math.atan2(field.fluxX, field.fluxZ);
             dummy.rotation.set(0, angle, 0);
 
-            const arrowScale = Math.min(1.4, Math.max(0.1, Math.abs(field.amplitude) * 0.9));
+            const arrowScale = Math.min(1.4, Math.max(0.1, Math.abs(field.amplitude) * 0.85));
             dummy.scale.set(arrowScale, arrowScale, arrowScale);
             dummy.updateMatrix();
 
@@ -353,14 +406,33 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         vectorArrowsRef.current.visible = false;
       }
 
-      // Update Probe Position & Sample Value
-      if (probeMeshRef.current) {
-        const px = probePosRef.current.x;
-        const pz = probePosRef.current.z;
-        const fieldAtProbe = calculateWaveField(px, pz, timeRef.current, waveRef.current, wallRef.current, materialRef.current);
-        probeMeshRef.current.position.set(px, fieldAtProbe.amplitude * 1.3, pz);
-        onTimeUpdate(timeRef.current, fieldAtProbe.amplitude);
+      // Échantillonnage aux 2 sondes et synchronisation avec l'oscilloscope
+      const prb = probeStateRef.current;
+      const field1 = calculateWaveField(
+        prb.x1,
+        prb.z1,
+        timeRef.current,
+        waveRef.current,
+        wallRef.current,
+        materialRef.current
+      );
+      const field2 = calculateWaveField(
+        prb.x2,
+        prb.z2,
+        timeRef.current,
+        waveRef.current,
+        wallRef.current,
+        materialRef.current
+      );
+
+      if (probe1GroupRef.current) {
+        probe1GroupRef.current.position.set(prb.x1, field1.amplitude * 1.3, prb.z1);
       }
+      if (probe2GroupRef.current) {
+        probe2GroupRef.current.position.set(prb.x2, field2.amplitude * 1.3, prb.z2);
+      }
+
+      onTimeUpdate(timeRef.current, field1.amplitude, field2.amplitude);
 
       renderer.render(scene, camera);
     };
@@ -383,95 +455,100 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     };
   }, []);
 
-  // Update Wall Meshes when wall geometry or material changes
+  // Génération dynamique de l'obstacle 3D texturé via THREE.Shape et THREE.ExtrudeGeometry
   useEffect(() => {
-    if (!wallGroupRef.current || !sceneRef.current) return;
-    const group = wallGroupRef.current;
-    // Clear old meshes
-    while (group.children.length > 0) {
-      const child = group.children[0] as THREE.Mesh;
-      group.remove(child);
-      if (child.geometry) child.geometry.dispose();
+    if (!sceneRef.current) return;
+    const scene = sceneRef.current;
+
+    // Supprimer l'ancien maillage de paroi
+    if (wallMeshRef.current) {
+      scene.remove(wallMeshRef.current);
+      if (wallMeshRef.current.geometry) wallMeshRef.current.geometry.dispose();
+      wallMeshRef.current = null;
     }
 
-    const wallSpan = 24;
-    const count = Math.max(1, wall.slotCount);
-    const slotWidth = Math.max(0.6, wall.slotSpacing * 0.45);
-    const period = wallSpan / count;
-    const halfSpan = wallSpan / 2;
+    const halfThickness = wall.thickness / 2;
+    const wallHeight = wall.height || 4.0;
+    const wallSpanZ = 24.0; // Barrière transversale barrant toute la largeur Z [-12, +12]
+    const zSteps = 240;
+
+    // Tracé de la section horizontale fermée (Z, X) avec orientation rigoureuse
+    const shape = new THREE.Shape();
+
+    // 1. Face arrière plane à x = +halfThickness, parcourue de z = +12 vers z = -12
+    shape.moveTo(wallSpanZ / 2, halfThickness);
+    shape.lineTo(-wallSpanZ / 2, halfThickness);
+
+    // 2. Face avant texturée profilée (face à l'onde incidente venant de -X)
+    // Parcourue de z = -12 vers z = +12
+    for (let i = 0; i <= zSteps; i++) {
+      const z = -wallSpanZ / 2 + (i / zSteps) * wallSpanZ;
+      const deltaX = getSurfaceTextureDisplacement(
+        z,
+        wall.textureProfile,
+        wall.textureDepth,
+        wall.texturePeriod
+      );
+      const xFront = -halfThickness - deltaX;
+      shape.lineTo(z, xFront);
+    }
+
+    // Fermeture du polygone vers (wallSpanZ / 2, halfThickness)
+    shape.closePath();
+
+    const extrudeSettings: THREE.ExtrudeGeometryOptions = {
+      depth: wallHeight,
+      bevelEnabled: false,
+    };
+
+    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    // Alignement rigoureux :
+    // rotateZ(-pi/2) puis rotateX(-pi/2) transforme (z, x, y_local) en (x, y, z) avec det=+1
+    geometry.rotateZ(-Math.PI / 2);
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(wall.posX, 0, 0);
+    geometry.computeVertexNormals();
 
     const wallColor = new THREE.Color(material.color);
     const wallMat = new THREE.MeshStandardMaterial({
       color: wallColor,
-      roughness: 0.4,
-      metalness: material.id === 'metal' ? 0.8 : 0.1,
+      roughness: 0.35,
+      metalness: material.id === 'metal' ? 0.9 : 0.15,
       transparent: true,
-      opacity: material.id === 'air' ? 0.3 : 0.85,
+      opacity: material.id === 'air' ? 0.35 : 0.88,
+      side: THREE.DoubleSide,
     });
 
-    // Build solid blocks between slots
-    let curZ = -halfSpan;
-    for (let i = 0; i < count; i++) {
-      const slotCenterZ = -halfSpan + period * (i + 0.5);
-      const slotStart = slotCenterZ - slotWidth / 2;
-      const slotEnd = slotCenterZ + slotWidth / 2;
+    const mesh = new THREE.Mesh(geometry, wallMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
 
-      // Solid block prior to slot
-      if (slotStart > curZ) {
-        const blockLen = slotStart - curZ;
-        const blockCenterZ = curZ + blockLen / 2;
-        const blockGeo = new THREE.BoxGeometry(wall.thickness, wall.height, blockLen);
-        const mesh = new THREE.Mesh(blockGeo, wallMat);
-        mesh.position.set(wall.posX, wall.height / 2, blockCenterZ);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        group.add(mesh);
-      }
+    // Arêtes filaires lumineuses pour surligner chaque dent et créneau 3D
+    const edges = new THREE.EdgesGeometry(geometry, 20);
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: material.id === 'metal' ? 0xffffff : 0x00f5d4,
+      transparent: true,
+      opacity: 0.6,
+    });
+    const edgeLines = new THREE.LineSegments(edges, edgeMat);
+    mesh.add(edgeLines);
 
-      // Air cavity guide lines ("col d'air")
-      if (wall.cavityDepth > 0.1) {
-        const cavityGeo = new THREE.BoxGeometry(
-          Math.min(wall.thickness, wall.cavityDepth),
-          wall.height * 0.9,
-          slotWidth
-        );
-        const cavityEdges = new THREE.EdgesGeometry(cavityGeo);
-        const line = new THREE.LineSegments(
-          cavityEdges,
-          new THREE.LineBasicMaterial({ color: 0x00f5d4, transparent: true, opacity: 0.6 })
-        );
-        line.position.set(wall.posX, wall.height / 2, slotCenterZ);
-        group.add(line);
-      }
-
-      curZ = slotEnd;
-    }
-
-    // Final solid block
-    if (curZ < halfSpan) {
-      const blockLen = halfSpan - curZ;
-      const blockCenterZ = curZ + blockLen / 2;
-      const blockGeo = new THREE.BoxGeometry(wall.thickness, wall.height, blockLen);
-      const mesh = new THREE.Mesh(blockGeo, wallMat);
-      mesh.position.set(wall.posX, wall.height / 2, blockCenterZ);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      group.add(mesh);
-    }
+    scene.add(mesh);
+    wallMeshRef.current = mesh;
   }, [wall, material]);
 
-  // Handle Camera Mode change (Perspective vs Top-Down)
+  // Mode de caméra (Perspective ou Vue du Dessus)
   useEffect(() => {
     if (!cameraRef.current || !controlsRef.current) return;
     const camera = cameraRef.current;
     const controls = controlsRef.current;
 
     if (simulation.cameraMode === 'top') {
-      camera.position.set(0, 34, 0.01);
+      camera.position.set(0, 36, 0.01);
       controls.target.set(0, 0, 0);
       camera.lookAt(0, 0, 0);
     } else {
-      camera.position.set(0, 22, 28);
+      camera.position.set(0, 24, 30);
       controls.target.set(0, 0, 0);
     }
     controls.update();
@@ -479,12 +556,26 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
   return (
     <div className="relative w-full h-full select-none overflow-hidden" ref={containerRef}>
-      {/* 3D Viewport Controls HUD overlay */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-2 bg-slate-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700/60 text-xs text-slate-300">
-        <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-        <span className="font-mono">60 FPS WebGL</span>
-        <span className="text-slate-500">|</span>
-        <span className="text-slate-400">Drag to Orbit • Tap field to move Probe</span>
+      {/* Télémétrie HUD overlay scientifique */}
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-2.5 bg-slate-900/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700/60 text-xs text-slate-300 shadow-lg">
+        <span className="font-mono text-cyan-400 font-semibold">WebGL 60 FPS</span>
+        <span className="text-slate-600">|</span>
+        <span className="text-slate-400 text-[11px]">
+          Faites glisser <span className="text-cyan-300 font-mono">Sonde 1</span> ou{' '}
+          <span className="text-amber-300 font-mono">Sonde 2</span>
+        </span>
+      </div>
+
+      {/* Légende rapide des sondes sur la scène */}
+      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 bg-slate-900/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700/60 text-[11px] text-slate-300 font-mono">
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
+          <span>Sonde 1 (x₁={probe.x1.toFixed(1)}m)</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+          <span>Sonde 2 (x₂={probe.x2.toFixed(1)}m)</span>
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,6 @@
+{
+  "summary":  "Revised implementation plan incorporating Guided Wave Modes (TEM, TE, TM) for the ENSA M115 physics laboratory. Adds guide aperture dimension controls (a, b), mode indices (m, n), dynamic cut-off frequency fc calculation, guided phase velocity v_phi,guided, guided wavelength lambda_g, evanescent wave cutoff detection with exponential attenuation (e^-alpha x), and real-time KaTeX formula updates.",
+  "updatedAt":  "2026-10-20T23:24:16.340420940Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

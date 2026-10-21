@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { ThreeViewport } from './components/ThreeViewport';
 import { ControlPanel } from './components/ControlPanel';
 import { Oscilloscope } from './components/Oscilloscope';
@@ -14,6 +14,7 @@ import {
   MATERIAL_PRESETS,
   calculateElectromagneticParameters,
 } from './physics/waveEngine';
+import { deserializeStateFromUrl, SavedPreset } from './utils/exportUtils';
 
 export const App: React.FC = () => {
   // Configuration de l'onde (M115)
@@ -158,6 +159,28 @@ export const App: React.FC = () => {
     [wave.guidedMode, params]
   );
 
+  // Initialisation à partir des paramètres URL si partage
+  useEffect(() => {
+    const urlState = deserializeStateFromUrl();
+    if (urlState) {
+      if (urlState.wave) setWave((prev) => ({ ...prev, ...urlState.wave }));
+      if (urlState.wall) setWall((prev) => ({ ...prev, ...urlState.wall }));
+      if (urlState.materialId) {
+        const found = MATERIAL_PRESETS.find((m) => m.id === urlState.materialId);
+        if (found) setMaterial(found);
+      }
+      if (urlState.probe) {
+        setProbe((prev) => ({
+          ...prev,
+          x1: urlState.probe!.x1,
+          z1: urlState.probe!.z1,
+          x2: urlState.probe!.x2,
+          z2: urlState.probe!.z2,
+        }));
+      }
+    }
+  }, []);
+
   // Déplacement au pointeur des sondes
   const handleProbeMove = useCallback((probeId: 1 | 2, x: number, z: number) => {
     setProbe((prev) => {
@@ -209,6 +232,20 @@ export const App: React.FC = () => {
     }));
   };
 
+  const handleLoadSavedPreset = (savedPreset: SavedPreset) => {
+    setWave(savedPreset.wave);
+    setWall(savedPreset.wall);
+    const mat = MATERIAL_PRESETS.find((m) => m.id === savedPreset.materialId) || MATERIAL_PRESETS[0];
+    setMaterial(mat);
+    setProbe((prev) => ({
+      ...prev,
+      x1: savedPreset.probe.x1,
+      z1: savedPreset.probe.z1,
+      x2: savedPreset.probe.x2,
+      z2: savedPreset.probe.z2,
+    }));
+  };
+
   return (
     <div className="flex flex-col w-screen h-screen bg-[#070b14] text-slate-100 overflow-hidden font-sans">
       {/* Barre d'entête ENSA & Scénarios */}
@@ -217,6 +254,11 @@ export const App: React.FC = () => {
         onSimulationChange={setSimulation}
         onApplyPreset={handleApplyPreset}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        wave={wave}
+        wall={wall}
+        material={material}
+        probe={probe}
+        onLoadSavedPreset={handleLoadSavedPreset}
       />
 
       {/* Corps Principal : Console de contrôle + Scène WebGL 3D */}
@@ -235,6 +277,7 @@ export const App: React.FC = () => {
             wave={wave}
             onWaveChange={setWave}
             probe={probe}
+            onProbeChange={setProbe}
             simulation={simulation}
             onSimulationChange={setSimulation}
           />

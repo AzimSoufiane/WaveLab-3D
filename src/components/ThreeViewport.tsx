@@ -42,7 +42,14 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
   // Sondes 3D
   const probe1GroupRef = useRef<THREE.Group | null>(null);
+  const probe1SphereRef = useRef<THREE.Mesh | null>(null);
+  const probe1StemRef = useRef<THREE.Mesh | null>(null);
+  const probe1OuterRingRef = useRef<THREE.Mesh | null>(null);
+
   const probe2GroupRef = useRef<THREE.Group | null>(null);
+  const probe2SphereRef = useRef<THREE.Mesh | null>(null);
+  const probe2StemRef = useRef<THREE.Mesh | null>(null);
+  const probe2OuterRingRef = useRef<THREE.Mesh | null>(null);
 
   const draggingProbeId = useRef<1 | 2 | null>(null);
   const raycaster = useRef(new THREE.Raycaster());
@@ -161,46 +168,73 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     vectorArrowsRef.current = arrowMesh;
 
     // Création des deux sondes virtuelles (Sonde 1 en Cyan, Sonde 2 en Ambre)
-    const buildProbeGroup = (colorHex: number, labelText: string) => {
+    const buildProbeGroup = (colorHex: number) => {
       const group = new THREE.Group();
 
       // Sphère active
-      const sphereGeo = new THREE.SphereGeometry(0.32, 20, 20);
+      const sphereGeo = new THREE.SphereGeometry(0.38, 24, 24);
       const sphereMat = new THREE.MeshStandardMaterial({
         color: colorHex,
         emissive: colorHex,
-        emissiveIntensity: 0.9,
+        emissiveIntensity: 0.95,
         roughness: 0.2,
       });
       const sphere = new THREE.Mesh(sphereGeo, sphereMat);
       sphere.position.y = 1.0;
+      sphere.castShadow = true;
       group.add(sphere);
 
-      // Tige graduée
-      const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8);
+      // Tige graduée télescopique
+      const stemGeo = new THREE.CylinderGeometry(0.045, 0.045, 1.0, 12);
       const stemMat = new THREE.MeshBasicMaterial({ color: colorHex });
       const stem = new THREE.Mesh(stemGeo, stemMat);
       stem.position.y = 0.5;
       group.add(stem);
 
       // Anneau de positionnement au sol
-      const ringGeo = new THREE.RingGeometry(0.35, 0.55, 24);
+      const ringGeo = new THREE.RingGeometry(0.38, 0.65, 32);
       ringGeo.rotateX(-Math.PI / 2);
       const ringMat = new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.position.y = 0.02;
       group.add(ring);
 
-      return group;
+      // Anneau extérieur interactif pour feedback de survol/drag
+      const outerRingGeo = new THREE.RingGeometry(0.85, 1.15, 32);
+      outerRingGeo.rotateX(-Math.PI / 2);
+      const outerRingMat = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.35,
+      });
+      const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
+      outerRing.position.y = 0.02;
+      group.add(outerRing);
+
+      // Volume de détection invisible pour un clic/drag ultra réactif
+      const hitBoxGeo = new THREE.CylinderGeometry(1.6, 1.6, 3.8, 16);
+      const hitBoxMat = new THREE.MeshBasicMaterial({ visible: false });
+      const hitBox = new THREE.Mesh(hitBoxGeo, hitBoxMat);
+      hitBox.position.y = 1.4;
+      group.add(hitBox);
+
+      return { group, sphere, stem, ring, outerRing };
     };
 
-    const probe1 = buildProbeGroup(0x00f5d4, 'Sonde 1');
-    scene.add(probe1);
-    probe1GroupRef.current = probe1;
+    const p1 = buildProbeGroup(0x00f5d4);
+    scene.add(p1.group);
+    probe1GroupRef.current = p1.group;
+    probe1SphereRef.current = p1.sphere;
+    probe1StemRef.current = p1.stem;
+    probe1OuterRingRef.current = p1.outerRing;
 
-    const probe2 = buildProbeGroup(0xf59e0b, 'Sonde 2');
-    scene.add(probe2);
-    probe2GroupRef.current = probe2;
+    const p2 = buildProbeGroup(0xf59e0b);
+    scene.add(p2.group);
+    probe2GroupRef.current = p2.group;
+    probe2SphereRef.current = p2.sphere;
+    probe2StemRef.current = p2.stem;
+    probe2OuterRingRef.current = p2.outerRing;
 
     // Redimensionnement de la fenêtre
     const handleResize = () => {
@@ -213,12 +247,41 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     };
     window.addEventListener('resize', handleResize);
 
-    // Gestion du glisser-déposer des sondes via Raycasting
-    const getIntersectionPoint = (e: MouseEvent | Touch): THREE.Vector3 | null => {
+    // Détection d'intersection géométrique avec les sondes
+    const checkProbeHit = (clientX: number, clientY: number): 1 | 2 | null => {
       if (!containerRef.current || !cameraRef.current) return null;
       const rect = containerRef.current.getBoundingClientRect();
-      mouse.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      mouse.current.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.current.setFromCamera(mouse.current, cameraRef.current);
+
+      // Raycast direct sur les objets 3D des sondes
+      if (probe1GroupRef.current) {
+        const hits1 = raycaster.current.intersectObjects(probe1GroupRef.current.children, true);
+        if (hits1.length > 0) return 1;
+      }
+      if (probe2GroupRef.current) {
+        const hits2 = raycaster.current.intersectObjects(probe2GroupRef.current.children, true);
+        if (hits2.length > 0) return 2;
+      }
+
+      // Raycast de secours sur le plan au sol avec rayon d'attraction
+      const intersection = new THREE.Vector3();
+      if (raycaster.current.ray.intersectPlane(groundPlane.current, intersection)) {
+        const prb = probeStateRef.current;
+        const dist1 = Math.hypot(intersection.x - prb.x1, intersection.z - prb.z1);
+        const dist2 = Math.hypot(intersection.x - prb.x2, intersection.z - prb.z2);
+        if (dist1 < 2.4 && dist1 <= dist2) return 1;
+        if (dist2 < 2.4) return 2;
+      }
+      return null;
+    };
+
+    const getGroundPosition = (clientX: number, clientY: number): THREE.Vector3 | null => {
+      if (!containerRef.current || !cameraRef.current) return null;
+      const rect = containerRef.current.getBoundingClientRect();
+      mouse.current.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.current.setFromCamera(mouse.current, cameraRef.current);
       const intersection = new THREE.Vector3();
       if (raycaster.current.ray.intersectPlane(groundPlane.current, intersection)) {
@@ -227,57 +290,75 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       return null;
     };
 
+    const domEl = renderer.domElement;
+
     const handlePointerDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
-      const pt = getIntersectionPoint(e);
-      if (!pt) return;
-
-      const p1 = probeStateRef.current;
-      const dist1 = Math.hypot(pt.x - p1.x1, pt.z - p1.z1);
-      const dist2 = Math.hypot(pt.x - p1.x2, pt.z - p1.z2);
-
-      if (dist1 < 1.6 && dist1 <= dist2) {
-        draggingProbeId.current = 1;
+      const hitId = checkProbeHit(e.clientX, e.clientY);
+      if (hitId) {
+        draggingProbeId.current = hitId;
         controls.enabled = false;
-      } else if (dist2 < 1.6) {
-        draggingProbeId.current = 2;
-        controls.enabled = false;
+        domEl.style.cursor = 'grabbing';
       }
     };
 
     const handlePointerMove = (e: MouseEvent) => {
-      if (!draggingProbeId.current) return;
-      const pt = getIntersectionPoint(e);
-      if (pt) {
-        const clampedX = Math.max(-14.5, Math.min(14.5, pt.x));
-        const clampedZ = Math.max(-9.5, Math.min(9.5, pt.z));
-        onProbeMove(draggingProbeId.current, clampedX, clampedZ);
+      if (draggingProbeId.current) {
+        domEl.style.cursor = 'grabbing';
+        const pt = getGroundPosition(e.clientX, e.clientY);
+        if (pt) {
+          const clampedX = Math.max(-14.0, Math.min(14.0, pt.x));
+          const clampedZ = Math.max(-9.0, Math.min(9.0, pt.z));
+          onProbeMove(draggingProbeId.current, clampedX, clampedZ);
+        }
+      } else {
+        // Détection de survol pour feedback visuel immédiat
+        const hitId = checkProbeHit(e.clientX, e.clientY);
+        if (hitId) {
+          domEl.style.cursor = 'grab';
+          if (hitId === 1 && probe1OuterRingRef.current) {
+            (probe1OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.85;
+          }
+          if (hitId === 2 && probe2OuterRingRef.current) {
+            (probe2OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.85;
+          }
+        } else {
+          domEl.style.cursor = 'default';
+          if (probe1OuterRingRef.current) {
+            (probe1OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35;
+          }
+          if (probe2OuterRingRef.current) {
+            (probe2OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35;
+          }
+        }
       }
     };
 
     const handlePointerUp = () => {
-      draggingProbeId.current = null;
-      controls.enabled = true;
+      if (draggingProbeId.current) {
+        draggingProbeId.current = null;
+        controls.enabled = true;
+        domEl.style.cursor = 'default';
+        if (probe1OuterRingRef.current) {
+          (probe1OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35;
+        }
+        if (probe2OuterRingRef.current) {
+          (probe2OuterRingRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35;
+        }
+      }
     };
 
-    const domEl = renderer.domElement;
     domEl.addEventListener('mousedown', handlePointerDown);
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
 
-    // Support tactile pour écrans mobiles/tablettes
+    // Support tactile réactif pour écrans tactiles et mobiles
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 1) {
-        const pt = getIntersectionPoint(e.touches[0]);
-        if (!pt) return;
-        const p1 = probeStateRef.current;
-        const dist1 = Math.hypot(pt.x - p1.x1, pt.z - p1.z1);
-        const dist2 = Math.hypot(pt.x - p1.x2, pt.z - p1.z2);
-        if (dist1 < 2.0 && dist1 <= dist2) {
-          draggingProbeId.current = 1;
-          controls.enabled = false;
-        } else if (dist2 < 2.0) {
-          draggingProbeId.current = 2;
+        const touch = e.touches[0];
+        const hitId = checkProbeHit(touch.clientX, touch.clientY);
+        if (hitId) {
+          draggingProbeId.current = hitId;
           controls.enabled = false;
         }
       }
@@ -285,10 +366,11 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
     const handleTouchMove = (e: TouchEvent) => {
       if (draggingProbeId.current && e.touches.length === 1) {
-        const pt = getIntersectionPoint(e.touches[0]);
+        const touch = e.touches[0];
+        const pt = getGroundPosition(touch.clientX, touch.clientY);
         if (pt) {
-          const clampedX = Math.max(-14.5, Math.min(14.5, pt.x));
-          const clampedZ = Math.max(-9.5, Math.min(9.5, pt.z));
+          const clampedX = Math.max(-14.0, Math.min(14.0, pt.x));
+          const clampedZ = Math.max(-9.0, Math.min(9.0, pt.z));
           onProbeMove(draggingProbeId.current, clampedX, clampedZ);
         }
       }
@@ -426,10 +508,28 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       );
 
       if (probe1GroupRef.current) {
-        probe1GroupRef.current.position.set(prb.x1, field1.amplitude * 1.3, prb.z1);
+        probe1GroupRef.current.position.set(prb.x1, 0, prb.z1);
       }
       if (probe2GroupRef.current) {
-        probe2GroupRef.current.position.set(prb.x2, field2.amplitude * 1.3, prb.z2);
+        probe2GroupRef.current.position.set(prb.x2, 0, prb.z2);
+      }
+
+      const sphereY1 = Math.max(0.2, 0.9 + field1.amplitude * 1.3);
+      if (probe1SphereRef.current) {
+        probe1SphereRef.current.position.y = sphereY1;
+      }
+      if (probe1StemRef.current) {
+        probe1StemRef.current.position.y = sphereY1 / 2;
+        probe1StemRef.current.scale.set(1, sphereY1, 1);
+      }
+
+      const sphereY2 = Math.max(0.2, 0.9 + field2.amplitude * 1.3);
+      if (probe2SphereRef.current) {
+        probe2SphereRef.current.position.y = sphereY2;
+      }
+      if (probe2StemRef.current) {
+        probe2StemRef.current.position.y = sphereY2 / 2;
+        probe2StemRef.current.scale.set(1, sphereY2, 1);
       }
 
       onTimeUpdate(timeRef.current, field1.amplitude, field2.amplitude);
